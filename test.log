@@ -1,0 +1,26 @@
+--- Processing a1 ---
+Average IoU for a1: 0.4146
+
+--- Processing a2 ---
+Average IoU for a2: 0.3843
+
+--- Processing a3 ---
+Average IoU for a3: 0.7188
+
+--- Processing b1 ---
+Average IoU for b1: 0.4728
+
+--- Processing b2 ---
+Average IoU for b2: 0.4258
+
+--- Processing b3 ---
+Average IoU for b3: 0.4376
+
+--- Processing c1 ---
+Average IoU for c1: 0.1201
+
+--- Processing c2 ---
+Average IoU for c2: 0.4666
+
+--- Processing c3 ---
+Average IoU for c3: 0.1321
