@@ -11,7 +11,7 @@ class BoatTracker:
     def get_blue_sea_boxes(self, img, S, V):
         """
         Expert A: For a1, a2, b1 (Standard Blue Water)
-        Strategy: Catch bright, cyan-ish wakes. Enforce strict shape to avoid noise.
+        Strategy: Catch bright, cyan-ish wakes.
         """
         # Loose Saturation (< 100) allows cyan wakes
         _, m_sat = cv2.threshold(S, 100, 255, cv2.THRESH_BINARY_INV)
@@ -36,7 +36,6 @@ class BoatTracker:
                     
                     # Strict Ratio (> 1.6) rejects circles/loops
                     if ratio > 1.6:
-                        # Solidity check: Real wakes are solid, loops are hollow
                         hull = cv2.convexHull(cnt)
                         hull_area = cv2.contourArea(hull)
                         solidity = area / hull_area if hull_area > 0 else 0
@@ -47,22 +46,33 @@ class BoatTracker:
                             boxes.append(box)
         return boxes
 
-    def get_loop_boxes(self, img, gray, S):
+    def get_loop_and_micro_boxes(self, img, gray, S):
         """
         Expert B: For c1, c2 (Loops / Tiny Boats)
-        Strategy: Use strict filters to break the loop, then find the straight 'stern' chunk.
+        Strategy: Use TWO scales of Adaptive Thresholding.
         """
-        # Adaptive Threshold breaks the loop naturally
+        # 1. Standard Adaptive (For c2 - Medium chunks)
         gray_blur = cv2.GaussianBlur(gray, (5, 5), 0)
-        mask_adaptive = cv2.adaptiveThreshold(
+        mask_macro = cv2.adaptiveThreshold(
             gray_blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
             cv2.THRESH_BINARY, 51, -10
         )
+        
+        # 2. Micro Adaptive (For c1 - Tiny dots) -> NEW!
+        # Small block size (13) catches tiny details that Block 51 misses
+        mask_micro = cv2.adaptiveThreshold(
+            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+            cv2.THRESH_BINARY, 13, -5
+        )
+        
+        # Union the two scales
+        mask_adaptive = cv2.bitwise_or(mask_macro, mask_micro)
+
         # Strict Saturation (< 50) removes blue water noise
         _, m_sat = cv2.threshold(S, 50, 255, cv2.THRESH_BINARY_INV)
         mask = cv2.bitwise_and(mask_adaptive, m_sat)
         
-        # Open operation to further snap thin loop lines
+        # Open operation to snap thin loop lines
         kernel = np.ones((3, 3), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         mask = cv2.dilate(mask, kernel, iterations=1) 
@@ -73,16 +83,15 @@ class BoatTracker:
         
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            # Filter: Small to Medium fragments
-            if 15 < area < 10000:
+            # Filter: Allow very small fragments (10px) for c1
+            if 10 < area < 10000:
                 rect = cv2.minAreaRect(cnt)
                 width, height = rect[1]
                 if width > 0 and height > 0:
                     ratio = max(width, height) / min(width, height)
                     
-                    # Ratio > 1.2: The "Stern" chunk is usually straight/long.
-                    # The "Turn" chunks are square/curved and will be filtered out.
-                    if ratio > 1.2:
+                    # Ratio > 1.1: Allow chunky fragments
+                    if ratio > 1.1:
                         # Safety: Ignore massive boxes
                         if (width * height) < (img_area * 0.05):
                             box = cv2.boxPoints(rect)
@@ -93,13 +102,21 @@ class BoatTracker:
     def get_sunset_boxes(self, img, gray):
         """
         Expert C: For c3, b2 (Sunset / Glare)
-        Strategy: Use Top-Hat to find 'bumps' in brightness, ignoring orange color.
+        Strategy: Use BLUE CHANNEL extraction + Top-Hat.
         """
+        # Physics Trick: Orange/Red water has LOW Blue. White foam has HIGH Blue.
+        B_channel = img[:,:,0] 
+        _, mask_blue = cv2.threshold(B_channel, 160, 255, cv2.THRESH_BINARY)
+        
+        # Top-Hat for local contrast
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 25))
         tophat = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, kernel)
-        _, mask = cv2.threshold(tophat, 15, 255, cv2.THRESH_BINARY)
+        _, mask_tophat = cv2.threshold(tophat, 15, 255, cv2.THRESH_BINARY)
         
-        # Clean up
+        # Union them to get the best of both
+        mask = cv2.bitwise_or(mask_blue, mask_tophat)
+        
+        # Clean up noise
         kernel_clean = np.ones((3, 3), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel_clean)
         
@@ -115,7 +132,7 @@ class BoatTracker:
                 if width > 0 and height > 0:
                     ratio = max(width, height) / min(width, height)
                     
-                    # Loose ratio (> 0.8) because sunset wakes can be blobby
+                    # Loose ratio (> 0.8)
                     if ratio > 0.8:
                         if (width * height) < (img_area * 0.05):
                             box = cv2.boxPoints(rect)
@@ -131,7 +148,7 @@ class BoatTracker:
         
         # 1. Run All Experts
         boxes_A = self.get_blue_sea_boxes(img, S, V)
-        boxes_B = self.get_loop_boxes(img, gray, S)
+        boxes_B = self.get_loop_and_micro_boxes(img, gray, S)
         boxes_C = self.get_sunset_boxes(img, gray)
         
         final_boxes = []
@@ -147,10 +164,9 @@ class BoatTracker:
             center_B = np.mean(b_B, axis=0)
             is_duplicate = False
             for b_existing in final_boxes:
-                # Check distance between centers (simple, fast overlap check)
                 center_existing = np.mean(b_existing, axis=0)
                 dist = np.linalg.norm(center_B - center_existing)
-                if dist < 20: # If centers are within 20px, it's the same boat
+                if dist < 20: 
                     is_duplicate = True
                     break
             if not is_duplicate:
@@ -169,10 +185,7 @@ class BoatTracker:
             if not is_duplicate:
                 final_boxes.append(b_C)
                 
-        # Create a dummy mask for visualization
-        dummy_mask = np.zeros_like(gray)
-        cv2.drawContours(dummy_mask, final_boxes, -1, 255, 1)
-        return final_boxes, dummy_mask
+        return final_boxes, None
 
     def calculate_iou(self, pred_points, gt_points):
         try:
@@ -201,7 +214,6 @@ def parse_gt_file(txt_path):
     return gt_polygons
 
 if __name__ == "__main__":
-    # Robust path handling
     current_dir = os.path.dirname(os.path.abspath(__file__))
     img_dir = os.path.join(current_dir, "Dataset", "data", "photo")
     gt_dir  = os.path.join(current_dir, "Dataset", "data", "GT")
@@ -221,7 +233,7 @@ if __name__ == "__main__":
         img = cv2.imread(img_path)
         gt_polys = parse_gt_file(txt_path)
         
-        pred_boxes, mask = tracker.find_all_stern_waves(img)
+        pred_boxes, _ = tracker.find_all_stern_waves(img)
         
         total_iou = 0
         vis_img = img.copy()
