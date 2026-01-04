@@ -244,11 +244,17 @@ if __name__ == "__main__":
         # --- Save Traditional result ---
         trad_img = img.copy()
         cv2.drawContours(trad_img, trad_boxes, -1, (0, 255, 0), 2)
+
+        # 2. Draw Ground Truth (Blue) - DO THIS BEFORE SAVING
+        cv2.drawContours(trad_img, np.array(gt_polys, dtype=np.int32), -1, (255, 0, 0), 2)
         cv2.imwrite(os.path.join(trad_dir, f"{file_id}_trad.jpg"), trad_img)
 
         # --- Save YOLO result ---
         yolo_img = img.copy()
         cv2.drawContours(yolo_img, yolo_boxes, -1, (0, 0, 255), 2)
+
+        # 2. Draw Ground Truth (Blue) - DO THIS BEFORE SAVING
+        cv2.drawContours(yolo_img, np.array(gt_polys, dtype=np.int32), -1, (255, 0, 0), 2)
         cv2.imwrite(os.path.join(yolo_dir, f"{file_id}_yolo.jpg"), yolo_img)
 
 
