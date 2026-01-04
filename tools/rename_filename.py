@@ -1,6 +1,7 @@
 import os
 
-IMAGE_DIR = "../SDXL_Dreambooth/output_images"
+IMAGE_DIR = "../SDXL_Dreambooth/output_images_precise_"
+START_INDEX = 271 
 
 files = sorted([
     f for f in os.listdir(IMAGE_DIR)
@@ -19,7 +20,8 @@ for idx, filename in enumerate(files):
 # Step 2: 再改成最終名稱 0.jpg, 1.jpg, ...
 for idx, temp_name in enumerate(temp_names):
     temp_path = os.path.join(IMAGE_DIR, temp_name)
-    final_path = os.path.join(IMAGE_DIR, f"{idx}.jpg")
+    final_index = START_INDEX + idx  
+    final_path = os.path.join(IMAGE_DIR, f"{final_index}.jpg") 
     os.rename(temp_path, final_path)
 
 print(f"Safely renamed {len(temp_names)} images.")
