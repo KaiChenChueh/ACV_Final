@@ -5,12 +5,7 @@ import os
 import re
 import time
 import matplotlib.pyplot as plt
-from matplotlib import transforms
 from ultralytics import YOLO
-
-# ==========================================
-# SHARED UTILITIES
-# ==========================================
 
 def parse_gt_file(txt_path):
     """Parses the Ground Truth text file into a list of polygon points."""
@@ -59,10 +54,7 @@ def compute_avg_iou(pred_boxes, gt_polys):
     
     return total_iou / len(gt_polys)
 
-# ==========================================
-# METHOD 1: TRADITIONAL CV (BoatTracker)
-# ==========================================
-
+# Method1: Use Traditional image processing 
 class BoatTracker:
     def __init__(self):
         pass 
@@ -165,11 +157,9 @@ class BoatTracker:
                 
         return final_boxes
 
-# ==========================================
-# METHOD 2: YOLO (Deep Learning)
-# ==========================================
+# Method2: Use DL(YOLOv8 OBB)
 
-# Initialize model once globally to avoid reloading latency in loop
+# Load model
 try:
     yolo_model = YOLO("best_mix_150.pt")
 except Exception as e:
@@ -194,10 +184,6 @@ def run_yolo_detection(img):
                 continue
             obb_boxes.append(pts)
     return obb_boxes
-
-# ==========================================
-# MAIN EXECUTION & COMPARISON
-# ==========================================
 
 if __name__ == "__main__":
     current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -268,18 +254,16 @@ if __name__ == "__main__":
 
     cv2.destroyAllWindows()
 
-    # ==========================================
-    # GENERATE COMPARISON TABLE
-    # ==========================================
+    # === Generate comparison table ==== #
     
     final_data = [
-        ["", "1", "2", "3"],          # Row 0 (Headers)
-        ["a", "", "", ""],            # Row 1 (will fill data below)
-        ["b", "", "", ""],            # Row 2 (will fill data below)
-        ["c", "", "", ""]             # Row 3 (will fill data below)
+        ["", "1", "2", "3"],         
+        ["a", "", "", ""],            
+        ["b", "", "", ""],          
+        ["c", "", "", ""]           
     ]
     
-    # Fill the data into the matrix
+    # Fill the data into the matrix(images) 
     grid_keys = [
         ["a1", "a2", "a3"],
         ["b1", "b2", "b3"],
@@ -290,7 +274,6 @@ if __name__ == "__main__":
         for c_idx, key in enumerate(row_keys):
             data = comparison_data.get(key)
             if data:
-                # Format: T: ... \n Y: ...
                 text = (f"T: {data['trad_iou']:.2f} / {data['trad_time']:.3f}s\n"
                         f"Y: {data['yolo_iou']:.2f} / {data['yolo_time']:.3f}s")
             else:
@@ -299,11 +282,11 @@ if __name__ == "__main__":
             # +1 because row 0 is headers, col 0 is headers
             final_data[r_idx + 1][c_idx + 1] = text
 
-    # 2. Setup Plot
+    # Setup plotting
     fig, ax = plt.subplots(figsize=(12, 6)) # Wider figure for better spacing
     ax.axis("off")
 
-    # 3. Create Table
+    # Create Table
     # Define widths: First column (labels) is narrower (0.1), others are equal (0.3)
     col_widths = [0.1, 0.3, 0.3, 0.3]
     
@@ -330,7 +313,7 @@ if __name__ == "__main__":
             cell.get_text().set_text("")  # clear data text
 
 
-    # 4. Manual Styling Loop (The Fix)
+    # Manual Styling Loop (The Fix)
     tbl.auto_set_font_size(False)
     tbl.set_fontsize(12)
     
@@ -368,10 +351,8 @@ if __name__ == "__main__":
 
             cell = cells[(r_idx + 1, c_idx + 1)]
             transform = cell.get_transform()
-
-            # =====================
-            # T line
-            # =====================
+            
+            # Traditional line
             ax.text(
                 0.40, 0.65,
                 f"T: {t_iou:.2f}",
@@ -402,9 +383,7 @@ if __name__ == "__main__":
                 transform=transform
             )
 
-            # =====================
-            # Y line
-            # =====================
+            # YOLO line
             ax.text(
                 0.40, 0.35,
                 f"Y: {y_iou:.2f}",
