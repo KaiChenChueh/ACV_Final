@@ -7,6 +7,7 @@ import time
 import matplotlib.pyplot as plt
 from ultralytics import YOLO
 
+# =========== Utility Functions ============ #
 def parse_gt_file(txt_path):
     """Parses the Ground Truth text file into a list of polygon points."""
     gt_polygons = []
@@ -54,21 +55,36 @@ def compute_avg_iou(pred_boxes, gt_polys):
     
     return total_iou / len(gt_polys)
 
+# ======================================= #
+
 # Method1: Use Traditional image processing 
 class BoatTracker:
     def __init__(self):
         pass 
-
+    
+    # Box_A
     def get_blue_sea_boxes(self, img, S, V):
+
+        # HSV thresholding(Low saturation, High value) 
         _, m_sat = cv2.threshold(S, 100, 255, cv2.THRESH_BINARY_INV)
         _, m_val = cv2.threshold(V, 140, 255, cv2.THRESH_BINARY)
         mask = cv2.bitwise_and(m_sat, m_val)
+
+        # Morphological Closing
         kernel = np.ones((5, 5), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
         boxes = []
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        img_area = img.shape[0] * img.shape[1]
+
         for cnt in contours:
             area = cv2.contourArea(cnt)
+
+            if area < 200 or area > img_area * 0.1:
+                continue
+
+            # Filter by area and aspect ratio
             if area > 200:
                 rect = cv2.minAreaRect(cnt)
                 width, height = rect[1]
@@ -82,6 +98,7 @@ class BoatTracker:
                             boxes.append(np.int32(cv2.boxPoints(rect)))
         return boxes
 
+    # Box_B
     def get_loop_and_micro_boxes(self, img, gray, S):
         gray_blur = cv2.GaussianBlur(gray, (5, 5), 0)
         mask_macro = cv2.adaptiveThreshold(gray_blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 51, -10)
@@ -107,6 +124,44 @@ class BoatTracker:
                             boxes.append(np.int32(cv2.boxPoints(rect)))
         return boxes
 
+    # Box_B Merge
+    def merge_nearby_boxes(self, boxes, dist_thresh=30):
+        """
+        Merge nearby bounding boxes based on center distance.
+        boxes: list of np.array shape (4,2)
+        dist_thresh: max center distance to be considered same object
+        """
+        if len(boxes) == 0:
+            return []
+
+        merged = []
+        used = [False] * len(boxes)
+
+        centers = [np.mean(b, axis=0) for b in boxes]
+
+        for i in range(len(boxes)):
+            if used[i]:
+                continue
+
+            group = [boxes[i]]
+            used[i] = True
+
+            for j in range(i + 1, len(boxes)):
+                if used[j]:
+                    continue
+
+                if np.linalg.norm(centers[i] - centers[j]) < dist_thresh:
+                    group.append(boxes[j])
+                    used[j] = True
+
+            # Merge group into one bounding box
+            all_points = np.vstack(group)
+            rect = cv2.minAreaRect(all_points)
+            merged.append(np.int32(cv2.boxPoints(rect)))
+
+        return merged
+
+    # Box_C
     def get_sunset_boxes(self, img, gray):
         B_channel = img[:,:,0] 
         _, mask_blue = cv2.threshold(B_channel, 160, 255, cv2.THRESH_BINARY)
@@ -131,6 +186,7 @@ class BoatTracker:
                             boxes.append(np.int32(cv2.boxPoints(rect)))
         return boxes
 
+
     def run_detection(self, img):
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -139,6 +195,7 @@ class BoatTracker:
         
         boxes_A = self.get_blue_sea_boxes(img, S, V)
         boxes_B = self.get_loop_and_micro_boxes(img, gray, S)
+        boxes_B = self.merge_nearby_boxes(boxes_B)
         boxes_C = self.get_sunset_boxes(img, gray)
         
         final_boxes = []
