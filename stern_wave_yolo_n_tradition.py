@@ -123,35 +123,50 @@ class BoatTracker:
                         if (width * height) < (img_area * 0.05):
                             boxes.append(np.int32(cv2.boxPoints(rect)))
         return boxes
+
+    def draw_cluster_debug(self, img, cluster_boxes, chosen_box):
+        debug = img.copy()
+        cv2.drawContours(debug, cluster_boxes, -1, (0, 255, 255), 1)  # cluster = yellow
+        cv2.drawContours(debug, [chosen_box], -1, (0, 0, 255), 3)     # chosen = red
+        return debug
     
     # Box_B Filter
-    def filter_small_boxes(self, boxes, min_area_ratio=0.0002, img_area=None):
-        if img_area is None:
-            return boxes
-
-        min_area = img_area * min_area_ratio
-        return [b for b in boxes if cv2.contourArea(b) >= min_area]
-    
-    def suppress_close_small_boxes(self, boxes, dist_thresh=40, area_ratio=0.3):
+    def suppress_close_small_boxes(
+        self,
+        img,
+        boxes,
+        dist_thresh=100,
+        dominance_thresh=3.0, #3.0
+        debug=False
+    ):
         if not boxes:
             return []
 
-        # sort large → small
+        # largest → smallest
         boxes = sorted(boxes, key=cv2.contourArea, reverse=True)
-
         kept = []
-        centers = [np.mean(b, axis=0) for b in boxes]
 
-        for i, b in enumerate(boxes):
-            keep = True
+        for b in boxes:
+            area_b = cv2.contourArea(b)
+            center_b = np.mean(b, axis=0)
+
+            suppress = False
+
             for k in kept:
-                dist = np.linalg.norm(
-                    np.mean(b, axis=0) - np.mean(k, axis=0)
-                )
+                area_k = cv2.contourArea(k)
+                center_k = np.mean(k, axis=0)
+
+                dist = np.linalg.norm(center_b - center_k)
+
                 if dist < dist_thresh:
-                    keep = False
-                    break
-            if keep:
+                    dominance_ratio = area_k / area_b
+
+                    if dominance_ratio > dominance_thresh:
+                        suppress = True
+
+                    break  # stop checking neighbors
+
+            if not suppress:
                 kept.append(b)
 
         return kept
@@ -312,11 +327,10 @@ class BoatTracker:
                 width, height = rect[1]
                 if width > 0 and height > 0:
                     ratio = max(width, height) / min(width, height)
-                    if ratio > 0.8:
+                    if ratio > 0.8: #0.8
                         if (width * height) < (img_area * 0.05):
                             boxes.append(np.int32(cv2.boxPoints(rect)))
         return boxes
-
 
     def run_detection(self, img):
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
@@ -336,19 +350,27 @@ class BoatTracker:
         )
 
         boxes_B = self.suppress_close_small_boxes(
+            img,
             boxes_B,
-            dist_thresh=60,
-            area_ratio=0.4
+            dist_thresh=100,
+            dominance_thresh=2.5,
+            debug=True
         )
 
         # combine all boxes
         all_boxes = boxes_A + boxes_B + boxes_C
 
+        all_boxes = self.suppress_close_small_boxes(
+            img,
+            all_boxes,
+            dist_thresh=80, #80
+            debug=True
+        )
+
         # FINAL hard constraint: no overlaps allowed
         final_boxes = self.suppress_overlaps(all_boxes)
 
         return final_boxes
-
 
 # Method2: Use DL(YOLOv8 OBB)
 
