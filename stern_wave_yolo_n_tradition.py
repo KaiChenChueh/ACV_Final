@@ -1,3 +1,80 @@
+# ACV_Final Project
+# Author: Stanley Chueh
+# Date: 2026-01-08
+# Description: Stern Wave Detection using Traditional CV and YOLOv8-OBB
+# Usage: python stern_wave_yolo_n_tradition.py
+
+'''
+============================================================
+Stern Wave Detection & Comparison Framework
+------------------------------------------------------------
+
+This script implements and compares two approaches for stern
+wave (wake) detection in maritime images:
+
+1) Traditional Computer Vision Pipeline
+2) Deep Learning Pipeline (YOLOv8 Oriented Bounding Boxes)
+
+------------------------------------------------------------
+PIPELINE OVERVIEW
+------------------------------------------------------------
+
+I. Traditional Computer Vision Method (BoatTracker)
+
+   A. Candidate Generation
+      - Box_A: Large extended wake (blue sea patterns)
+      - Box_B: Fragmented waves / micro-wave structures
+      - Box_C: Bright sunset / reflection induced waves
+
+   B. Wake Refinement (Traditional)
+      1) Merge overlapping Box_B fragments
+         - Union-Find merging using rotated rectangle overlap
+
+      2) Local Dominance Suppression
+         - For nearby boxes:
+             • Keep dominant (largest) wake
+             • Suppress smaller boxes ONLY if dominance is strong
+         - Controlled by:
+             • dist_thresh       (spatial proximity)
+             • dominance_thresh (area dominance ratio)
+
+      3) Global Suppression
+         - Apply dominance suppression again across all boxes
+
+      4) Hard Overlap Removal
+         - Final guarantee:
+             • No two output boxes overlap (rotated geometry)
+
+   C. Output
+      - Final set of non-overlapping wake bounding boxes
+
+------------------------------------------------------------
+II. Deep Learning Method (YOLOv8-OBB)
+
+   - Uses pretrained YOLOv8 model with oriented bounding boxes
+   - Directly predicts rotated bounding boxes for wakes
+   - No post-processing beyond confidence filtering
+
+------------------------------------------------------------
+III. Evaluation
+
+   - Ground truth provided as polygon annotations
+   - Metric: Polygon-based Intersection over Union (IoU)
+   - Strategy:
+       • For each GT object, select best matching prediction
+       • Report average IoU over all GT objects
+
+------------------------------------------------------------
+IV. Visualization & Comparison
+
+   - Traditional results: green contours
+   - YOLO results: red contours
+   - Ground truth: blue contours
+   - Outputs saved separately for visual comparison
+
+------------------------------------------------------------
+'''
+
 import cv2
 import numpy as np
 from shapely.geometry import Polygon
@@ -57,7 +134,7 @@ def compute_avg_iou(pred_boxes, gt_polys):
 
 # ======================================= #
 
-# Method1: Use Traditional image processing 
+# ==== Traditional Boat Tracker Class ==== #
 class BoatTracker:
     def __init__(self):
         pass 
@@ -123,21 +200,13 @@ class BoatTracker:
                         if (width * height) < (img_area * 0.05):
                             boxes.append(np.int32(cv2.boxPoints(rect)))
         return boxes
-
-    def draw_cluster_debug(self, img, cluster_boxes, chosen_box):
-        debug = img.copy()
-        cv2.drawContours(debug, cluster_boxes, -1, (0, 255, 255), 1)  # cluster = yellow
-        cv2.drawContours(debug, [chosen_box], -1, (0, 0, 255), 3)     # chosen = red
-        return debug
     
     # Box_B Filter
     def suppress_close_small_boxes(
         self,
-        img,
         boxes,
         dist_thresh=100,
         dominance_thresh=3.0, #3.0
-        debug=False
     ):
         if not boxes:
             return []
@@ -172,28 +241,6 @@ class BoatTracker:
         return kept
 
     # Box_B Merge
-    def _iou(self, boxA, boxB):
-        """
-        boxA, boxB: [x1, y1, x2, y2]
-        """
-        xA = max(boxA[0], boxB[0])
-        yA = max(boxA[1], boxB[1])
-        xB = min(boxA[2], boxB[2])
-        yB = min(boxA[3], boxB[3])
-
-        interW = max(0, xB - xA)
-        interH = max(0, yB - yA)
-        interArea = interW * interH
-
-        areaA = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
-        areaB = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
-
-        union = areaA + areaB - interArea
-        if union == 0:
-            return 0
-
-        return interArea / union
-    
     def rotated_overlap(self, box1, box2):
         rect1 = cv2.minAreaRect(box1)
         rect2 = cv2.minAreaRect(box2)
@@ -218,11 +265,9 @@ class BoatTracker:
 
         return kept
 
-    def merge_nearby_boxes_iou_distance_unionfind(
+    def merge_overlapping_boxes_unionfind(
         self,
         boxes,
-        iou_thresh=0.01,
-        dist_thresh=30
     ):
         """
         Union-Find merge using IoU OR center distance.
@@ -276,37 +321,6 @@ class BoatTracker:
 
         return merged
 
-    def debug_iou_neighbors(self, boxes, iou_min=0.01, top_k=5):
-        """
-        Print top IoU neighbors for each box.
-        """
-        n = len(boxes)
-        if n == 0:
-            return
-
-        # convert to AABB
-        aabbs = []
-        for b in boxes:
-            xs, ys = b[:, 0], b[:, 1]
-            aabbs.append([xs.min(), ys.min(), xs.max(), ys.max()])
-
-        print("\n====== IoU NEIGHBOR DEBUG ======")
-        for i in range(n):
-            ious = []
-            for j in range(n):
-                if i == j:
-                    continue
-                iou = self._iou(aabbs[i], aabbs[j])
-                if iou >= iou_min:
-                    ious.append((j, iou))
-
-            ious.sort(key=lambda x: x[1], reverse=True)
-            if ious:
-                print(f"Box {i}: ", end="")
-                for j, iou in ious[:top_k]:
-                    print(f"{j}({iou:.3f}) ", end="")
-                print()
-
     # Box_C
     def get_sunset_boxes(self, img, gray):
         B_channel = img[:,:,0] 
@@ -343,28 +357,22 @@ class BoatTracker:
         boxes_C = self.get_sunset_boxes(img, gray)
 
         # merge fragmented wake boxes only
-        boxes_B = self.merge_nearby_boxes_iou_distance_unionfind(
+        boxes_B = self.merge_overlapping_boxes_unionfind(
             boxes_B,
-            iou_thresh=0.01,
-            dist_thresh=30
         )
 
         boxes_B = self.suppress_close_small_boxes(
-            img,
             boxes_B,
             dist_thresh=100,
             dominance_thresh=2.5,
-            debug=True
         )
 
         # combine all boxes
         all_boxes = boxes_A + boxes_B + boxes_C
 
         all_boxes = self.suppress_close_small_boxes(
-            img,
             all_boxes,
             dist_thresh=80, #80
-            debug=True
         )
 
         # FINAL hard constraint: no overlaps allowed
@@ -372,7 +380,7 @@ class BoatTracker:
 
         return final_boxes
 
-# Method2: Use DL(YOLOv8 OBB)
+# ==== YOLO Detection Function ==== #
 
 # Load model
 try:
