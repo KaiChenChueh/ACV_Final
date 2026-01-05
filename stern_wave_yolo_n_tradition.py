@@ -24,7 +24,6 @@ I. Traditional Computer Vision Method (BoatTracker)
    A. Candidate Generation
       - Box_A: Large extended wake (blue sea patterns)
       - Box_B: Fragmented waves / micro-wave structures
-      - Box_C: Bright sunset / reflection induced waves
 
    B. Wake Refinement (Traditional)
       1) Merge overlapping Box_B fragments
@@ -321,31 +320,6 @@ class BoatTracker:
 
         return merged
 
-    # Box_C
-    def get_sunset_boxes(self, img, gray):
-        B_channel = img[:,:,0] 
-        _, mask_blue = cv2.threshold(B_channel, 160, 255, cv2.THRESH_BINARY)
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 25))
-        tophat = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, kernel)
-        _, mask_tophat = cv2.threshold(tophat, 15, 255, cv2.THRESH_BINARY)
-        mask = cv2.bitwise_or(mask_blue, mask_tophat)
-        kernel_clean = np.ones((3, 3), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel_clean)
-        boxes = []
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        img_area = img.shape[0] * img.shape[1]
-        for cnt in contours:
-            area = cv2.contourArea(cnt)
-            if area > 15:
-                rect = cv2.minAreaRect(cnt)
-                width, height = rect[1]
-                if width > 0 and height > 0:
-                    ratio = max(width, height) / min(width, height)
-                    if ratio > 0.8: #0.8
-                        if (width * height) < (img_area * 0.05):
-                            boxes.append(np.int32(cv2.boxPoints(rect)))
-        return boxes
-
     def run_detection(self, img):
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -354,7 +328,6 @@ class BoatTracker:
 
         boxes_A = self.get_blue_sea_boxes(img, S, V)
         boxes_B = self.get_loop_and_micro_boxes(img, gray, S)
-        boxes_C = self.get_sunset_boxes(img, gray)
 
         # merge fragmented wake boxes only
         boxes_B = self.merge_overlapping_boxes_unionfind(
@@ -368,7 +341,7 @@ class BoatTracker:
         )
 
         # combine all boxes
-        all_boxes = boxes_A + boxes_B + boxes_C
+        all_boxes = boxes_A + boxes_B
 
         all_boxes = self.suppress_close_small_boxes(
             all_boxes,
