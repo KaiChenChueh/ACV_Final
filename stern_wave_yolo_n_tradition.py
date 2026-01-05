@@ -125,41 +125,160 @@ class BoatTracker:
         return boxes
 
     # Box_B Merge
-    def merge_nearby_boxes(self, boxes, dist_thresh=30):
+    def _iou(self, boxA, boxB):
         """
-        Merge nearby bounding boxes based on center distance.
-        boxes: list of np.array shape (4,2)
-        dist_thresh: max center distance to be considered same object
+        boxA, boxB: [x1, y1, x2, y2]
         """
-        if len(boxes) == 0:
+        xA = max(boxA[0], boxB[0])
+        yA = max(boxA[1], boxB[1])
+        xB = min(boxA[2], boxB[2])
+        yB = min(boxA[3], boxB[3])
+
+        interW = max(0, xB - xA)
+        interH = max(0, yB - yA)
+        interArea = interW * interH
+
+        areaA = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
+        areaB = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
+
+        union = areaA + areaB - interArea
+        if union == 0:
+            return 0
+
+        return interArea / union
+    
+    def rotated_overlap(self, box1, box2):
+        rect1 = cv2.minAreaRect(box1)
+        rect2 = cv2.minAreaRect(box2)
+        retval, _ = cv2.rotatedRectangleIntersection(rect1, rect2)
+        return retval != cv2.INTERSECT_NONE
+
+    def suppress_overlaps(self, boxes):
+        """
+        GLOBAL hard suppression:
+        Iteratively remove overlaps until NONE remain.
+        GUARANTEE: no two output boxes overlap (rotated).
+        """
+        if not boxes:
             return []
 
+        boxes = list(boxes)
+        changed = True
+
+        while changed:
+            changed = False
+            kept = []
+
+            for b in boxes:
+                keep = True
+                for k in kept:
+                    if self.rotated_overlap(b, k):
+                        area_b = cv2.contourArea(b)
+                        area_k = cv2.contourArea(k)
+
+                        if area_b > area_k:
+                            kept = [x for x in kept if not np.array_equal(x, k)]
+                            changed = True
+                        else:
+                            keep = False
+                            changed = True
+                        break
+
+                if keep:
+                    kept.append(b)
+
+            boxes = kept
+
+        return boxes
+
+    def merge_nearby_boxes_iou_distance_unionfind(
+        self,
+        boxes,
+        iou_thresh=0.01,
+        dist_thresh=30
+    ):
+        """
+        Union-Find merge using IoU OR center distance.
+        Designed for wake / wave structures.
+        """
+        n = len(boxes)
+        if n == 0:
+            return []
+
+        # ---- Step 1: AABB + centers ----
+        aabbs = []
+        centers = []
+        for b in boxes:
+            xs = b[:, 0]
+            ys = b[:, 1]
+            aabbs.append([xs.min(), ys.min(), xs.max(), ys.max()])
+            centers.append(np.array([xs.mean(), ys.mean()]))
+
+        # ---- Step 2: Union-Find ----
+        parent = list(range(n))
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(x, y):
+            rx, ry = find(x), find(y)
+            if rx != ry:
+                parent[ry] = rx
+
+        # ---- Step 3: Hybrid merge rule ----
+        for i in range(n):
+            for j in range(i + 1, n):
+                if self.rotated_overlap(boxes[i], boxes[j]):
+                    union(i, j)
+
+        # ---- Step 4: Collect components ----
+        groups = {}
+        for i in range(n):
+            r = find(i)
+            groups.setdefault(r, []).append(boxes[i])
+
+        # ---- Step 5: Merge each component ----
         merged = []
-        used = [False] * len(boxes)
-
-        centers = [np.mean(b, axis=0) for b in boxes]
-
-        for i in range(len(boxes)):
-            if used[i]:
-                continue
-
-            group = [boxes[i]]
-            used[i] = True
-
-            for j in range(i + 1, len(boxes)):
-                if used[j]:
-                    continue
-
-                if np.linalg.norm(centers[i] - centers[j]) < dist_thresh:
-                    group.append(boxes[j])
-                    used[j] = True
-
-            # Merge group into one bounding box
+        for group in groups.values():
             all_points = np.vstack(group)
             rect = cv2.minAreaRect(all_points)
             merged.append(np.int32(cv2.boxPoints(rect)))
 
         return merged
+
+    def debug_iou_neighbors(self, boxes, iou_min=0.01, top_k=5):
+        """
+        Print top IoU neighbors for each box.
+        """
+        n = len(boxes)
+        if n == 0:
+            return
+
+        # convert to AABB
+        aabbs = []
+        for b in boxes:
+            xs, ys = b[:, 0], b[:, 1]
+            aabbs.append([xs.min(), ys.min(), xs.max(), ys.max()])
+
+        print("\n====== IoU NEIGHBOR DEBUG ======")
+        for i in range(n):
+            ious = []
+            for j in range(n):
+                if i == j:
+                    continue
+                iou = self._iou(aabbs[i], aabbs[j])
+                if iou >= iou_min:
+                    ious.append((j, iou))
+
+            ious.sort(key=lambda x: x[1], reverse=True)
+            if ious:
+                print(f"Box {i}: ", end="")
+                for j, iou in ious[:top_k]:
+                    print(f"{j}({iou:.3f}) ", end="")
+                print()
 
     # Box_C
     def get_sunset_boxes(self, img, gray):
@@ -190,29 +309,28 @@ class BoatTracker:
     def run_detection(self, img):
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        S = hsv[:,:,1]
-        V = hsv[:,:,2]
-        
+        S = hsv[:, :, 1]
+        V = hsv[:, :, 2]
+
         boxes_A = self.get_blue_sea_boxes(img, S, V)
         boxes_B = self.get_loop_and_micro_boxes(img, gray, S)
-        boxes_B = self.merge_nearby_boxes(boxes_B)
         boxes_C = self.get_sunset_boxes(img, gray)
-        
-        final_boxes = []
-        # Priority Merge: A -> B -> C
-        for b in boxes_A: final_boxes.append(b)
-        
-        for b_B in boxes_B:
-            center_B = np.mean(b_B, axis=0)
-            if not any(np.linalg.norm(center_B - np.mean(existing, axis=0)) < 20 for existing in final_boxes):
-                final_boxes.append(b_B)
-                
-        for b_C in boxes_C:
-            center_C = np.mean(b_C, axis=0)
-            if not any(np.linalg.norm(center_C - np.mean(existing, axis=0)) < 20 for existing in final_boxes):
-                final_boxes.append(b_C)
-                
+
+        # merge fragmented wake boxes only
+        boxes_B = self.merge_nearby_boxes_iou_distance_unionfind(
+            boxes_B,
+            iou_thresh=0.01,
+            dist_thresh=30
+        )
+
+        # combine all boxes
+        all_boxes = boxes_A + boxes_B + boxes_C
+
+        # FINAL hard constraint: no overlaps allowed
+        final_boxes = self.suppress_overlaps(all_boxes)
+
         return final_boxes
+
 
 # Method2: Use DL(YOLOv8 OBB)
 
