@@ -131,6 +131,31 @@ def compute_avg_iou(pred_boxes, gt_polys):
     
     return total_iou / len(gt_polys)
 
+def compute_tp_fp_fn(pred_boxes, gt_polys, iou_thresh=0.3):
+    matched_gt = set()
+    TP = 0
+    FP = 0
+
+    for pred in pred_boxes:
+        best_iou = 0
+        best_gt_idx = -1
+
+        for i, gt in enumerate(gt_polys):
+            iou = calculate_iou_poly(pred, gt)
+            if iou > best_iou:
+                best_iou = iou
+                best_gt_idx = i
+
+        if best_iou >= iou_thresh and best_gt_idx not in matched_gt:
+            TP += 1
+            matched_gt.add(best_gt_idx)
+        else:
+            FP += 1
+
+    FN = len(gt_polys) - len(matched_gt)
+    return TP, FP, FN
+
+
 # ======================================= #
 
 # ==== Traditional Boat Tracker Class ==== #
@@ -426,12 +451,25 @@ if __name__ == "__main__":
         time_yolo = time.time() - start_y
         iou_yolo = compute_avg_iou(yolo_boxes, gt_polys)
 
+        # --- 3. Compute TP, FP, FN ---
+        tp_t, fp_t, fn_t = compute_tp_fp_fn(trad_boxes, gt_polys, iou_thresh=0.3)
+        tp_y, fp_y, fn_y = compute_tp_fp_fn(yolo_boxes, gt_polys, iou_thresh=0.3)
+
+
         # --- Store Results ---
         comparison_data[file_id] = {
             'trad_time': time_trad,
             'trad_iou': iou_trad,
             'yolo_time': time_yolo,
-            'yolo_iou': iou_yolo
+            'yolo_iou': iou_yolo,
+
+            'trad_tp': tp_t,
+            'trad_fp': fp_t,
+            'trad_fn': fn_t,
+
+            'yolo_tp': tp_y,
+            'yolo_fp': fp_y,
+            'yolo_fn': fn_y
         }
         
         print(f"{file_id:<10} | {'Trad':<12} | {time_trad:.4f}     | {iou_trad:.4f}")
@@ -620,4 +658,36 @@ if __name__ == "__main__":
 
     plt.savefig("stern_wave_comparison_table.png", dpi=300, bbox_inches="tight")
     print("\nTable saved as 'stern_wave_comparison_table.png'")
+
+    # ===== TP / FP / FN BAR CHART ===== #
+
+    image_ids = []
+    trad_fp_list = []
+    yolo_fp_list = []
+
+    for key in test_files:
+        data = comparison_data.get(key)
+        if data is None:
+            continue
+
+        image_ids.append(key)
+        trad_fp_list.append(data['trad_fp'])
+        yolo_fp_list.append(data['yolo_fp'])
+
+    x = np.arange(len(image_ids))
+    width = 0.35
+
+    plt.figure(figsize=(12, 5))
+    plt.bar(x - width/2, trad_fp_list, width, label='Traditional FP')
+    plt.bar(x + width/2, yolo_fp_list, width, label='YOLO FP')
+
+    plt.xticks(x, image_ids)
+    plt.ylabel("False Positive Count")
+    plt.xlabel("Image ID")
+    plt.title("False Positive Comparison per Image(IoU Threshold=0.3)")
+    plt.legend()
+    plt.grid(axis='y')
+
+    plt.tight_layout()
+    plt.savefig("fp_per_image_comparison.png", dpi=300)
     plt.show()
