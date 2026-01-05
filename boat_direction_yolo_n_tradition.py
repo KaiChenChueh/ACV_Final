@@ -5,11 +5,9 @@ import re
 import math
 import matplotlib.pyplot as plt
 from ultralytics import YOLO
+import time
 
-# ==============================================================================
-# SHARED UTILITIES
-# ==============================================================================
-
+# =========== Utility Functions ============ #
 def parse_gt_file(txt_path):
     """Parses GT file into dictionary: {frame_id: [{'p1':(x,y), 'p2':(x,y)}]}"""
     gt_data = {}
@@ -47,10 +45,9 @@ def get_angle_diff(a1, a2):
     diff = abs(a1 - a2) % 360
     return min(diff, 360 - diff)
 
-# ==============================================================================
-# METHOD 1: TRADITIONAL (Optical Flow + Hybrid Tracker)
-# ==============================================================================
+# ======================================= #
 
+# ==== Traditional Boat Tracker Class ==== #
 class FlowComputer:
     def __init__(self):
         self.prev_gray = None
@@ -264,11 +261,9 @@ class HybridTracker:
         p_end   = (int(curr[0] + math.cos(final_rad)*30), int(curr[1] + math.sin(final_rad)*30))
         
         return final_deg, (p_start, p_end)
-    
-# ==============================================================================
-# METHOD 2: YOLO (OBB Detection + Simple Tracking)
-# ==============================================================================
+# ======================================= #
 
+# --- YOLO DETECTION FUNCTIONS --- #
 # Load model globally
 try:
     yolo_model = YOLO("best_mix_150.pt")
@@ -321,11 +316,16 @@ def run_traditional_method(video_path, gt_data):
     total_error = 0
     valid_comparisons = 0
     frame_idx = 1
+    start_time = time.time()
+    frame_count = 0
+    total_gt_objects = 0
 
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
+
+        frame_count += 1
 
         # -----------------------------
         # 1. Traditional detection + tracking
@@ -338,6 +338,7 @@ def run_traditional_method(video_path, gt_data):
         # 2. GT visualization (always draw)
         # -----------------------------
         if frame_idx in gt_data and len(gt_data[frame_idx]) > 0:
+            total_gt_objects += len(gt_data[frame_idx])
             for gt_obj in gt_data[frame_idx]:
                 cv2.arrowedLine(
                     frame,
@@ -353,6 +354,7 @@ def run_traditional_method(video_path, gt_data):
 
             min_dist = 150
             best_match_err = None
+            best_vec = None
 
             # -----------------------------
             # 3. boad_direction-style direction
@@ -375,10 +377,7 @@ def run_traditional_method(video_path, gt_data):
                     best_match_err = get_angle_diff(pred_orientation, gt_angle)
                     best_vec = vec_pts
 
-            if best_match_err is not None:
-                total_error += best_match_err
-                valid_comparisons += 1
-
+            if best_vec is not None:
                 cv2.arrowedLine(frame, best_vec[0], best_vec[1], (0,255,255), 3)
 
             # -----------------------------
@@ -394,10 +393,14 @@ def run_traditional_method(video_path, gt_data):
     cap.release()
     writer.release()
 
+    total_time = time.time() - start_time
+    avg_time = total_time / frame_count if frame_count > 0 else 0.0
+
     avg_err = total_error / valid_comparisons if valid_comparisons > 0 else 999.0
-    return avg_err, valid_comparisons
+    return avg_err, valid_comparisons, avg_time, total_gt_objects
 
 def run_yolo_method(video_path, gt_data):
+    total_gt_objects = 0
     cap = cv2.VideoCapture(video_path)
 
     out_dir = "output/boat_direction_yolo_vis"
@@ -413,14 +416,21 @@ def run_yolo_method(video_path, gt_data):
     total_error = 0
     valid_comparisons = 0
     frame_idx = 1
+    start_time = time.time() 
+    frame_count = 0          
     
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret: break
+
+        frame_count += 1
         
         detections = yolo_detect_centers(frame)
         
         gt_objects = gt_data[frame_idx]
+
+        if frame_idx in gt_data:
+            total_gt_objects += len(gt_data[frame_idx])
 
         for gt_obj in gt_objects:
             gt_start = gt_obj['p1']
@@ -469,8 +479,10 @@ def run_yolo_method(video_path, gt_data):
     cap.release()
     writer.release()
 
+    total_time = time.time() - start_time
+    avg_time = total_time / frame_count if frame_count > 0 else 0.0
     avg_err = (total_error / valid_comparisons) if valid_comparisons > 0 else 999.0
-    return avg_err, valid_comparisons
+    return avg_err, valid_comparisons, avg_time, total_gt_objects
 
 # ==============================================================================
 # MAIN & TABLE GENERATION
@@ -506,18 +518,19 @@ if __name__ == "__main__":
             gt_data = parse_gt_file(txt_path)
             
             # Run Trad
-            t_err, t_cnt = run_traditional_method(video_path, gt_data)
+            t_err, t_cnt, t_time, t_total = run_traditional_method(video_path, gt_data)
+            t_rate = (t_cnt / t_total * 100) if t_total > 0 else 0.0
             print(f"{file_id:<8} | {'Trad':<6} | {t_err:<8.2f} | {t_cnt}")
             
             # Run YOLO
-            y_err, y_cnt = run_yolo_method(video_path, gt_data)
+            y_err, y_cnt, y_time, y_total = run_yolo_method(video_path, gt_data)
+            y_rate = (y_cnt / y_total * 100) if y_total > 0 else 0.0
             print(f"{file_id:<8} | {'YOLO':<6} | {y_err:<8.2f} | {y_cnt}")
-            
-            comparison_data[file_id] = {
-                't_err': t_err, 't_cnt': t_cnt,
-                'y_err': y_err, 'y_cnt': y_cnt
-            }
 
+            comparison_data[file_id] = {
+                't_err': t_err, 't_rate': t_rate, 't_time': t_time, 
+                'y_err': y_err, 'y_rate': y_rate, 'y_time': y_time  
+            }
     # ==========================================
     # GENERATE COMPARISON TABLE (ROBUST)
     # ==========================================
@@ -576,7 +589,7 @@ if __name__ == "__main__":
     fig.canvas.draw()
 
     # ----------------------------
-    # 2. Draw data text (ONCE)
+    # 2. Draw data text (UPDATED)
     # ----------------------------
     for r_idx, row_keys in enumerate(grid_keys):
         for c_idx, key in enumerate(row_keys):
@@ -585,58 +598,56 @@ if __name__ == "__main__":
             if not data:
                 continue
 
-            t_err, t_cnt = data["t_err"], data["t_cnt"]
-            y_err, y_cnt = data["y_err"], data["y_cnt"]
+            # Retrieve Time
+            t_err, t_rate, t_time = data["t_err"], data["t_rate"], data["t_time"]
+            y_err, y_rate, y_time = data["y_err"], data["y_rate"], data["y_time"]
 
             cell = cells[(r_idx + 1, c_idx + 1)]
             transform = cell.get_transform()
 
-            # comparison logic
+            # Comparison logic (Red if better)
+            # Error: Lower is better
             t_err_red = (t_err != 999.0 and y_err != 999.0 and t_err < y_err)
             y_err_red = (t_err != 999.0 and y_err != 999.0 and y_err < t_err)
-            t_cnt_red = (t_err != 999.0 and y_err != 999.0 and t_cnt > y_cnt)
-            y_cnt_red = (t_err != 999.0 and y_err != 999.0 and y_cnt > t_cnt)
 
-            t_err_str = f"{t_err:.2f}°" if t_err != 999.0 else "N/A"
-            y_err_str = f"{y_err:.2f}°" if y_err != 999.0 else "N/A"
+            # Time: Lower is better
+            t_time_red = (t_time < y_time)
+            y_time_red = (y_time < t_time)
 
-            # -------- Traditional (T) --------
-            ax.text(0.05, 0.62, "T:", ha="left", va="center",
-                    fontsize=11, color="black", transform=transform)
+            t_err_str = f"{t_err:.1f}°" if t_err != 999.0 else "N/A"
+            y_err_str = f"{y_err:.1f}°" if y_err != 999.0 else "N/A"
 
-            ax.text(0.12, 0.62, f"{t_err_str}", ha="left", va="center",
-                    fontsize=11,
-                    color="red" if (t_err != 999.0 and y_err != 999.0 and t_err < y_err) else "black",
-                    transform=transform)
+            t_rate_red = (t_rate > y_rate)
+            y_rate_red = (y_rate > t_rate)
 
-            ax.text(0.22, 0.62, "|", ha="left", va="center",
-                    fontsize=11, color="black", transform=transform)
+            # --- Row 1: Traditional ---
+            # Label
+            ax.text(0.05, 0.65, "T:", ha="left", va="center", fontsize=10, transform=transform)
+            # Error
+            ax.text(0.15, 0.65, t_err_str, ha="left", va="center", fontsize=10,
+                    color="red" if t_err_red else "black", transform=transform)
+            # Rate Text
+            ax.text(0.40, 0.65, f"{t_rate:.1f}%", ha="left", va="center", fontsize=10,
+                    color="red" if t_rate_red else "black", transform=transform)
+            # Time 
+            ax.text(0.65, 0.65, f"{t_time:.3f}s", ha="left", va="center", fontsize=10,
+                    color="red" if t_time_red else "black", transform=transform)
 
-            ax.text(0.25, 0.62, f"{t_cnt} frames", ha="left", va="center",
-                    fontsize=11,
-                    color="red" if (t_err != 999.0 and y_err != 999.0 and t_cnt > y_cnt) else "black",
-                    transform=transform)
-
-            # -------- YOLO (Y) --------
-            ax.text(0.05, 0.32, "Y:", ha="left", va="center",
-                    fontsize=11, color="black", transform=transform)
-
-            ax.text(0.12, 0.32, f"{y_err_str}", ha="left", va="center",
-                    fontsize=11,
-                    color="red" if (t_err != 999.0 and y_err != 999.0 and y_err < t_err) else "black",
-                    transform=transform)
-
-            ax.text(0.22, 0.32, "|", ha="left", va="center",
-                    fontsize=11, color="black", transform=transform)
-
-            ax.text(0.25, 0.32, f"{y_cnt} frames", ha="left", va="center",
-                    fontsize=11,
-                    color="red" if (t_err != 999.0 and y_err != 999.0 and y_cnt > t_cnt) else "black",
-                    transform=transform)
+            # --- Row 2: YOLO ---
+            # Label
+            ax.text(0.05, 0.35, "Y:", ha="left", va="center", fontsize=10, transform=transform)
+            # Error
+            ax.text(0.15, 0.35, y_err_str, ha="left", va="center", fontsize=10,
+                    color="red" if y_err_red else "black", transform=transform)
+            # Rate Text (Changed from "fr" to "%")
+            ax.text(0.40, 0.35, f"{y_rate:.1f}%", ha="left", va="center", fontsize=10,
+                    color="red" if y_rate_red else "black", transform=transform)
+            # Time 
+            ax.text(0.65, 0.35, f"{y_time:.3f}s", ha="left", va="center", fontsize=10,
+                    color="red" if y_time_red else "black", transform=transform)
 
     plt.title(
-        "Boat Direction: Traditional (T) vs YOLO (Y)\n"
-        "Red indicates better Error (Lower) or Count (Higher)",
+        "Comparison: Avg Angle Error | Tracking Rate | Avg Time/Frame",
         fontsize=14,
         pad=20
     )
