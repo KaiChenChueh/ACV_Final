@@ -123,6 +123,38 @@ class BoatTracker:
                         if (width * height) < (img_area * 0.05):
                             boxes.append(np.int32(cv2.boxPoints(rect)))
         return boxes
+    
+    # Box_B Filter
+    def filter_small_boxes(self, boxes, min_area_ratio=0.0002, img_area=None):
+        if img_area is None:
+            return boxes
+
+        min_area = img_area * min_area_ratio
+        return [b for b in boxes if cv2.contourArea(b) >= min_area]
+    
+    def suppress_close_small_boxes(self, boxes, dist_thresh=40, area_ratio=0.3):
+        if not boxes:
+            return []
+
+        # sort large → small
+        boxes = sorted(boxes, key=cv2.contourArea, reverse=True)
+
+        kept = []
+        centers = [np.mean(b, axis=0) for b in boxes]
+
+        for i, b in enumerate(boxes):
+            keep = True
+            for k in kept:
+                dist = np.linalg.norm(
+                    np.mean(b, axis=0) - np.mean(k, axis=0)
+                )
+                if dist < dist_thresh:
+                    keep = False
+                    break
+            if keep:
+                kept.append(b)
+
+        return kept
 
     # Box_B Merge
     def _iou(self, boxA, boxB):
@@ -154,42 +186,22 @@ class BoatTracker:
         return retval != cv2.INTERSECT_NONE
 
     def suppress_overlaps(self, boxes):
-        """
-        GLOBAL hard suppression:
-        Iteratively remove overlaps until NONE remain.
-        GUARANTEE: no two output boxes overlap (rotated).
-        """
         if not boxes:
             return []
 
-        boxes = list(boxes)
-        changed = True
+        boxes = sorted(boxes, key=cv2.contourArea, reverse=True)
+        kept = []
 
-        while changed:
-            changed = False
-            kept = []
+        for b in boxes:
+            overlap = False
+            for k in kept:
+                if self.rotated_overlap(b, k):
+                    overlap = True
+                    break
+            if not overlap:
+                kept.append(b)
 
-            for b in boxes:
-                keep = True
-                for k in kept:
-                    if self.rotated_overlap(b, k):
-                        area_b = cv2.contourArea(b)
-                        area_k = cv2.contourArea(k)
-
-                        if area_b > area_k:
-                            kept = [x for x in kept if not np.array_equal(x, k)]
-                            changed = True
-                        else:
-                            keep = False
-                            changed = True
-                        break
-
-                if keep:
-                    kept.append(b)
-
-            boxes = kept
-
-        return boxes
+        return kept
 
     def merge_nearby_boxes_iou_distance_unionfind(
         self,
@@ -321,6 +333,12 @@ class BoatTracker:
             boxes_B,
             iou_thresh=0.01,
             dist_thresh=30
+        )
+
+        boxes_B = self.suppress_close_small_boxes(
+            boxes_B,
+            dist_thresh=60,
+            area_ratio=0.4
         )
 
         # combine all boxes
