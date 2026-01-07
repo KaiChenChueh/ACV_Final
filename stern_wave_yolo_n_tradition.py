@@ -380,12 +380,24 @@ class BoatTracker:
 
 # ==== YOLO Detection Function ==== #
 
-# Load model
+# Load model(warm up)
 try:
     yolo_model = YOLO("best_mix_150.pt")
+
+    # ---- YOLO WARM-UP (NOT TIMED) ----
+    dummy = np.zeros((640, 640, 3), dtype=np.uint8)
+    for _ in range(3):
+        _ = yolo_model.predict(
+            source=dummy,
+            conf=0.25,
+            imgsz=640,
+            verbose=False
+        )
+
 except Exception as e:
     print(f"Error loading YOLO model: {e}")
     yolo_model = None
+
 
 def run_yolo_detection(img):
     if yolo_model is None: return []
@@ -690,4 +702,8 @@ if __name__ == "__main__":
 
     plt.tight_layout()
     plt.savefig("fp_per_image_comparison.png", dpi=300)
-    plt.show()
+    
+    try:
+        plt.show()
+    except KeyboardInterrupt:
+        print("Plot window closed by user.")
